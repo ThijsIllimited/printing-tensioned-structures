@@ -1,0 +1,6 @@
+numpy
+compas
+compas_fd
+os
+warnings
+traceback
