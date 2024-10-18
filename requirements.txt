@@ -2,3 +2,5 @@ numpy
 compas
 compas_fd
 ipykernel
+plotly
+nbformat>=4.2.0
