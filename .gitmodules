@@ -1,0 +1,3 @@
+[submodule "src/GcodeGenerator"]
+	path = src/GcodeGenerator
+	url = https://github.com/tibor-barsi/GcodeGenerator
