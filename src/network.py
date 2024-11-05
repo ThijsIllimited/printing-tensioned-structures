@@ -472,6 +472,36 @@ class Network_custom(object):
                 # Add loop_points at the end of the path
                 self.paths_xyz[i] = np.vstack([self.paths_xyz[i], loop_points])
         return
+    
+    def add_running_start(self, start_bools, end_bools, L_running_start = 10, n_points = 10):
+        """Add a running start to the paths.
+        parameters:
+        start_bools: list of bool
+            List of bools indicating if a running start should be added at the start of the path
+        end_bools: list of bool
+            List of bools indicating if a running start should be added at the end of the path
+        L_running_start: float
+            Length of the running start
+        """
+        for i, (path_xyz, start, end) in enumerate(zip(self.paths_xyz, start_bools, end_bools)):
+            if start:
+                p0 = path_xyz[0]  # First point of the path
+                p1 = path_xyz[1]  # Second point of the path to calculate angle
+                direction = (p1 - p0)/np.linalg.norm(p1 - p0)
+                end_point = p0 - direction * L_running_start
+                running_start = np.linspace(end_point, p0, n_points)
+                # Add running start at the start of the path
+                self.paths_xyz[i] = np.vstack([running_start, self.paths_xyz[i]])
+
+            if end:
+                p0 = path_xyz[-2]
+                p1 = path_xyz[-1]
+                direction = (p1 - p0)/np.linalg.norm(p1 - p0)
+                end_point = p1 + direction * L_running_start
+                running_start = np.linspace(p1, end_point, n_points)
+                # Add running start at the end of the path
+                self.paths_xyz[i] = np.vstack([self.paths_xyz[i], running_start])
+        return
 
     # Visualize the network
     def net_plot(self, color=False, elables=False, vlabels=False, plot_type='equilibrium'):
