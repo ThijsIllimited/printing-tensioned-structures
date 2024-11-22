@@ -5,7 +5,7 @@ import warnings as Warning
 
 class Network_custom(object):
     def __init__(self):
-        self.vertices = []              # Initial vertices of the network in equilibrium
+        self.vertices = []              # Initial vertices of the network before updating shape or the final vertices after updating the shape
         self.vertices_scaled = []       # Scaled vertices of the network
         self.edges = []                 # Edges of the network
         self.q = []                     # Force densities of the edges
@@ -24,6 +24,16 @@ class Network_custom(object):
         self.dir = []                   # Direction of the arcs either 1 or -1
         self.n_split = 5                # Number of points to split the arc into
         self.intersections = []         # list of list of vertices that are also in one or more previous paths
+        self.mat_dict = {}              # Dictionary of material properties
+
+    def set_material(self, material_dict):
+        """Set the material properties of the network.
+        parameters:
+        material_dict: dict
+            Dictionary of material properties
+        """
+        self.mat_dict = material_dict
+        return
 
     def num_vertices(self):
         return len(self.vertices)
@@ -64,8 +74,6 @@ class Network_custom(object):
             return True
         else:
             return False
-    
-
 
     @classmethod
     def from_fd(cls, vertices, edges, q, fixed, loads = None, constraints = None, paths = None, dir = None):
@@ -207,10 +215,11 @@ class Network_custom(object):
         if dir is None:
             dir = self.dir
         xyz = []
-        for edge, R_i, dir_i in zip(self.edges, R, dir):
+        for edge, R_i, th_i, dir_i in zip(self.edges, R, th, dir):
             p0 = self.vertices_scaled[edge[0]]
             p1 = self.vertices_scaled[edge[1]]
             arc_points = self._points_on_arc(p0[:2], p1[:2], R_i, dir_i, n)
+            # arc_points = self._points_on_arc2(p0[:2], p1[:2], R_i, th_i, dir_i, n)
             p = np.stack((arc_points[:,0], arc_points[:,1], np.zeros(n)), axis = 1)
             xyz.append(p)
         self.xyz_vec = xyz
@@ -219,48 +228,53 @@ class Network_custom(object):
         self._update_intersections()
         self._update_paths()
         return xyz
-            
-    def _points_on_arc(self, p0, p1, R, dir = 1, n = 5):
-        # import matplotlib.pyplot as plt
+    
+    def _points_on_arc(self, p0, p1, R, dir=1, n=5):
         """Calculate n points on an arc defined by a starting point, ending point, a radius, and a direction.
         input:
             p0:         the starting coordinates of the arc
             p1:         the ending coordinates of the arc
             R:          the radius of the arc
-            n:          the number of points on the arc
             dir:        if -1, the arc is in the opposite direction
+            n:          the number of points on the arc
         output:
             arc_points: the points on the arc
         """
-        # Step 1: Midpoint
         x0, y0 = p0
         x1, y1 = p1
-        mid = np.array([(x0 + x1) / 2, (y0 + y1) / 2])
-        
-        # Step 2: Perpendicular vector
         vec = np.array([x1 - x0, y1 - y0])
-        perp_vec = dir * np.array([-vec[1], vec[0]])
+        chord_length = np.linalg.norm(vec)
         
-        # Step 3: Normalize and find center point
-        perp_unit = perp_vec / np.linalg.norm(perp_vec)
-        center = mid + np.sqrt(R**2 - np.linalg.norm(mid - np.array([x0, y0]))**2) * perp_unit
+        # Validate radius
+        if chord_length > 2 * R:
+            raise ValueError("Radius R is too small for the given points.")
         
-        # Step 4: Start and end angles
+        # Midpoint and perpendicular
+        mid = np.array([(x0 + x1) / 2, (y0 + y1) / 2])
+        perp_vec = dir * np.array([-vec[1], vec[0]]) / np.linalg.norm(vec)
+        
+        # Distance from midpoint to center
+        h = np.sqrt(R**2 - (chord_length / 2)**2)
+        center = mid + h * perp_vec
+        
+        # Angles
         theta0 = np.arctan2(y0 - center[1], x0 - center[0])
         theta1 = np.arctan2(y1 - center[1], x1 - center[0])
-
-        # Step 5: Generate n angles between theta0 and theta1. If the angle difference is larger than pi, the arc is in the opposite direction
-        angle_diff = theta1 - theta0
-        if np.abs(theta0-theta1) > np.pi:
-            angle_diff = 2*np.pi - np.abs(angle_diff)
-            angles = np.linspace(theta0, theta0 - angle_diff, n)
-        else:
-            angles = np.linspace(theta0-theta1, 0, n) + theta1
         
-        # Step 6: Calculate points
+        # Normalize and interpolate angles
+        theta0 = np.mod(theta0, 2 * np.pi)
+        theta1 = np.mod(theta1, 2 * np.pi)
+        if dir == 1 and theta1 < theta0:
+            theta1 += 2 * np.pi
+        elif dir == -1 and theta0 < theta1:
+            theta0 += 2 * np.pi
+        angles = np.linspace(theta0, theta1, n)
+        
+        # Points on the arc
         arc_points = np.array([[center[0] + R * np.cos(angle), center[1] + R * np.sin(angle)] for angle in angles])
         return arc_points
-    
+
+
     def flip_curve(self, edge_number, dir = None, n = None):
         """Flip the direction of the curve defined by the edge number.
         parameters:
@@ -281,6 +295,7 @@ class Network_custom(object):
         p0 = self.vertices_scaled[self.edges[edge_number][0]]
         p1 = self.vertices_scaled[self.edges[edge_number][1]]
         arc_points = self._points_on_arc(p0[:2], p1[:2], self.R[edge_number], self.dir[edge_number], n)
+        # arc_points = self._points_on_arc2(p0[:2], p1[:2], self.R[edge_number], self.th[edge_number], self.dir[edge_number], n)
         self.xyz_vec[edge_number] = np.stack((arc_points[:,0], arc_points[:,1], np.zeros(n)), axis = 1)
 
         # Update paths and intersections 
@@ -591,6 +606,87 @@ class Network_custom(object):
         # ))
         # Display the figure
         fig.show()
+
+    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium'):
+        """Plot the network using Matplotlib.
+        parameters:
+        color: bool
+            If True, the edges will be colored based on the forces
+        elables: bool
+            If True, the edges will be labeled
+        vlabels: bool
+            If True, the vertices will be labeled
+        plot_type: str
+            Type of plot to display. Options are 'equilibrium', 'scaled' and arcs.
+        """
+        import matplotlib.pyplot as plt
+
+        x, y = [], []
+        text_positions = []
+        elabels = []
+
+        if plot_type == 'equilibrium':
+            vertices = self.vertices
+        else:
+            vertices = self.vertices_scaled
+        
+        if plot_type == 'arcs':
+            for i, (u, v) in enumerate(self.edges):
+                x.extend(list(self.xyz_vec[i][:,0])+[None])
+                y.extend(list(self.xyz_vec[i][:,1])+[None])
+
+                if elables:
+                    xyz_u = vertices[u]
+                    xyz_v = vertices[v]
+                    mid_point = [(xyz_u[j] + xyz_v[j]) / 2 for j in range(3)]
+                    text_positions.append(mid_point)
+                    elabels.append(str(i))
+
+        else:
+            for i, (u, v) in enumerate(self.edges):
+                xyz_u = vertices[u]
+                xyz_v = vertices[v]
+                x.extend([xyz_u[0], xyz_v[0], None])
+                y.extend([xyz_u[1], xyz_v[1], None])
+                if elables:
+                    mid_point = [(xyz_u[j] + xyz_v[j]) / 2 for j in range(3)]
+                    text_positions.append(mid_point)
+                    elabels.append(str(i))
+                    ax.text(mid_point[0], mid_point[1], str(i))
+        # Create lines
+        ax.plot(x, y, 'g--', lw=1, alpha=0.6, label = 'Theoretical network')
+        if vlabels:
+            for i, pos in enumerate(vertices.tolist()):
+                ax.text(pos[0], pos[1], str(i), color='black')
+        return ax
+    
+    def save_network(self, path = None):
+        """Save the network to a file.
+        parameters:
+        path: str
+            Path to the file. If None, the network will be saved to the current directory.
+        """
+        import pickle
+        if path is None:
+            path = 'network.json'
+        with open(path, 'wb') as f:
+            pickle.dump(self, f)
+        return
+
+    @staticmethod
+    def load_network(path = None):
+        """Load the network from a file.
+        parameters:
+        path: str
+            Path to the file. If None, the network will be loaded from the current directory.
+        """
+        import pickle
+        if path is None:
+            path = 'network.json'
+        with open(path, 'rb') as f:
+            self = pickle.load(f)
+        return self
+
 
 def replace_brackets(line, temperature_settings):
     """"Replace the brackets and the brackets contents with the corresponding variable from the dictionary"""
