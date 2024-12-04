@@ -1,11 +1,18 @@
 from compas_fd.solvers import fd_constrained_numpy
 from compas.geometry import distance_point_point
+from compas.datastructures import Graph
 import numpy as np
 import warnings as Warning
+from shapely.geometry import LineString
+from shapely.affinity import translate
+from scipy.optimize import minimize
+from src.shapeoptimizer import ShapeOptimizer 
 
 class Network_custom(object):
     def __init__(self):
         self.vertices = []              # Initial vertices of the network before updating shape or the final vertices after updating the shape
+        self.vertices_2d = []           # Projection of vertices onto a single plane
+        self.vertices_optimized = []    # Vertices of the network after optimization
         self.vertices_scaled = []       # Scaled vertices of the network
         self.edges = []                 # Edges of the network
         self.q = []                     # Force densities of the edges
@@ -14,7 +21,7 @@ class Network_custom(object):
         self.loads = []                 # Loads on the vertices
         self.l0 = []                    # Initial lengths of the edges
         self.l1 = []                    # Stressed lengths of the edges
-        self.ls1 = []                   # Lengths of the edges after scaling
+        self.l1_optimized = []          # Stressed lengths of the edges after optimization
         self.R  = []                    # Radius of the arcs
         self.th = []                    # Angle of the arcs
         self.xyz_vec= []                # Points on the arcs
@@ -24,7 +31,59 @@ class Network_custom(object):
         self.dir = []                   # Direction of the arcs either 1 or -1
         self.n_split = 5                # Number of points to split the arc into
         self.intersections = []         # list of list of vertices that are also in one or more previous paths
+        self.crossings = {}             # Dictionary of crossing edges. The key is the edge number that crosses another edge. The value is the edges that it crosses.
         self.mat_dict = {}              # Dictionary of material properties
+        self.ShapeOptimizer = None      # ShapeOptimizer object
+        self.result = None              # Result of the optimization
+
+    def get_geometric_edge_keys(self):
+        """Get the keys of the geometric edges."""
+        self.g_keys = {tuple(edge): idx for idx, edge in enumerate(self.edges)}
+
+    def initialize_shape_optimizer(self, function_type = 'standard',  method = 'L-BFGS-B', params = None):
+        """Initialize the ShapeOptimizer object.
+        parameters:
+        function_type: str
+            Type of error function ('standard', 'sigmoid', or 'no optimization').
+        method: str
+            Optimization method to use.
+        params: dict
+            Parameters for the error function (e.g., a, b for sigmoid).
+        """
+        self.ShapeOptimizer = ShapeOptimizer(self.vertices_2d, self.edges, self.l0)
+        self.ShapeOptimizer.set_optimization_method(method)
+        if function_type is not None:
+            if params is None:
+                self.ShapeOptimizer.set_error_function(function_type)
+            else:
+                self.ShapeOptimizer.set_error_function(function_type, **params)
+        return
+
+    def get_net_projection(self, plane_normal):
+    # Normalize the plane normal to ensure it's a unit vector
+        plane_normal = plane_normal / np.linalg.norm(plane_normal)
+        
+        # Define an arbitrary vector to construct the local basis
+        arbitrary_vector = np.array([1, 0, 0]) if not np.allclose(plane_normal, [1, 0, 0]) else np.array([0, 1, 0])
+        
+        # Compute the local x' axis (orthogonal to the plane normal)
+        x_prime = np.cross(arbitrary_vector, plane_normal)
+        x_prime /= np.linalg.norm(x_prime)
+        
+        # Compute the local y' axis (orthogonal to both the plane normal and x')
+        y_prime = np.cross(plane_normal, x_prime)
+        y_prime /= np.linalg.norm(y_prime)
+        
+        # Project vertices into the local coordinate system
+        x_y_coordinates = []
+        for vertex in self.vertices:
+            # Subtract any offset (e.g., if plane passes through a point other than origin)
+            # For simplicity, assuming the plane passes through the origin
+            x_prime_coord = np.dot(vertex, x_prime)
+            y_prime_coord = np.dot(vertex, y_prime)
+            x_y_coordinates.append([x_prime_coord, y_prime_coord])
+        self.vertices_2d = np.array(x_y_coordinates)
+        return self.vertices_2d
 
     def set_material(self, material_dict):
         """Set the material properties of the network.
@@ -34,7 +93,7 @@ class Network_custom(object):
         """
         self.mat_dict = material_dict
         return
-
+    
     def num_vertices(self):
         return len(self.vertices)
     
@@ -65,15 +124,13 @@ class Network_custom(object):
         )
 
         self.vertices = np.array(result.vertices).reshape(-1, 3)
+        self.vertices_2d = self.vertices[..., :2]
         self.f = np.array(result.forces).reshape(-1)
         self.l1 = np.array(result.lengths).reshape(-1)
 
     def is_closed(self, path):
         """Check if path is closed."""
-        if self.edges[path[0]][0] == self.edges[path[-1]][1]:
-            return True
-        else:
-            return False
+        return self.edges[path[0]][0] == self.edges[path[-1]][1]
 
     @classmethod
     def from_fd(cls, vertices, edges, q, fixed, loads = None, constraints = None, paths = None, dir = None):
@@ -115,9 +172,11 @@ class Network_custom(object):
         )
 
         net.vertices = np.array(result.vertices).reshape(-1, 3)
+        net.vertices_2d = net.vertices[..., :2]
         net.f = np.array(result.forces).reshape(-1)
         net.l1 = np.array(result.lengths).reshape(-1)
-        
+
+        net.get_geometric_edge_keys()
         return net
     
     def materialize(self, E, A):
@@ -149,7 +208,24 @@ class Network_custom(object):
         self.l0 = spsolve(A,self.l1)
         self.l_scalar = np.min(self.l0/self.l1)
         return self.l0, self.l_scalar
-    
+
+    def optimize_vertices(self):
+        """Find and update the optimal vertices of the network based on the error function.
+        parameters:
+        error_function: function
+            Error function to minimize. If None, the standard error function is used.
+        initial_guess: numpy array
+            Initial guess for the vertices. If None, the current vertices are used.
+        method: str
+            Optimization method to use. Default is 'L-BFGS-B'.
+
+        Returns
+        -------
+        Nothing. The vertices are updated in place.
+        """
+        self.vertices_optimized =  np.zeros_like(self.vertices)
+        self.vertices_optimized[...,:2], self.l1, self.result = self.ShapeOptimizer.optimal_vertices()
+        self.l_scalar = np.min(self.l0/self.l1)
 
     def scale_vertices(self, reference_point, l_scalar = None):
         """Scale the network based on a reference point and a scale factor.
@@ -162,8 +238,8 @@ class Network_custom(object):
         if l_scalar is None:
             l_scalar = self.l_scalar
         reference_point = np.array(reference_point)
-        self.vertices_scaled = reference_point + l_scalar * (self.vertices - reference_point)
-        return self.vertices_scaled
+        self.vertices_scaled = reference_point + l_scalar * (self.vertices_optimized - reference_point)
+        return
 
     def arc_param(self, D = None, L = None, interpolation_points = 1e6):
         """
@@ -333,6 +409,76 @@ class Network_custom(object):
             self.paths_xyz.append(path_xyz)
         return
     
+    def get_crossings(self):
+        """Get the pairs of edges that cross each other in the path.
+        returns:
+        list of tuples
+            Pairs of edges that cross each other
+        """
+        vertices_dict = {i: self.vertices_2d[i].tolist() + [0] for i in range(len(self.vertices_2d))}
+        graph = Graph.from_nodes_and_edges(vertices_dict, self.edges.tolist())
+        crossing_pairs = graph.find_crossings()
+
+        # vertices_set_list = [set() for _ in range(len(self.path))]
+        # for path, vertex_set  in zip(self.path, vertices_set_list):
+        #     for edge in path:
+        #         vertex_set.add(self.edges[edge][0])
+        #         vertex_set.add(self.edges[edge][1])
+        edge_set_list = [set(path) for path in self.path]
+        for path, edge_set in zip(self.path, edge_set_list):
+            for edge in path:
+                edge_set.add(edge)
+
+        crossing_encountered = [[False] * 2 for _ in range(len(crossing_pairs))]
+        crossing_encountered = np.array(crossing_encountered)
+        all_crossings = []
+        for edge_set in edge_set_list:
+            path_crossings = []
+            for i, (vertex_pair_i, vertex_pair_j) in enumerate(crossing_pairs):
+                edge_i = self.g_keys[vertex_pair_i]
+                edge_j = self.g_keys[vertex_pair_j]
+                if edge_i in edge_set:
+                    crossing_encountered[i, 0] = True
+                    if crossing_encountered[i, 1]:
+                        self.crossings[edge_i] = edge_j
+                        path_crossings.append([edge_i, edge_j])
+                if edge_j in edge_set:
+                    crossing_encountered[i, 1] = True
+                    if crossing_encountered[i, 0]:
+                        self.crossings[edge_j] = edge_i
+                        path_crossings.append([edge_j, edge_i])
+            all_crossings.append(path_crossings)
+        self.all_crossings = all_crossings
+        return
+
+    def jump_at_crossings(self, crossing_width = 1, crossing_height = 1, interpolation_function = None):
+        """
+        Jump
+        at the crossing of the paths. This loop checks how close a point in xyz_vec is to the crossing and changes the z-coordinate of the point based on the distance.
+        """
+        from compas.geometry import intersection_segment_polyline_xy
+        if interpolation_function is None:
+            interpolation_function = self.linear_interpolate
+        
+        self.crossing_width = crossing_width
+        self.crossing_height = crossing_height
+        self.interpolation_function = interpolation_function
+
+        for crossing_pairs in self.all_crossings:
+            for crossing_pair in crossing_pairs:
+                xy_0 = self.xyz_vec[crossing_pair[0]][:,:2]
+                xy_1 = self.xyz_vec[crossing_pair[1]][:,:2]
+                for s0, s1 in zip(xy_0[:-1], xy_0[1:]) :
+                    intersection = intersection_segment_polyline_xy([s0, s1], xy_1)
+                    if intersection:
+                        for k, p in enumerate(self.xyz_vec[crossing_pair[0]]):
+                            d = distance_point_point(p, intersection)
+                            self.xyz_vec[crossing_pair[0]][k,2] = interpolation_function(d, crossing_width, crossing_height)
+                        break
+        
+        self._update_paths()
+        return
+
     def _update_intersections(self):
         """determine which vertices are also in one or more previous paths.
         """
@@ -529,7 +675,7 @@ class Network_custom(object):
         vlabels: bool
             If True, the vertices will be labeled
         plot_type: str
-            Type of plot to display. Options are 'equilibrium', 'scaled' and arcs.
+            Type of plot to display. Options are 'equilibrium', 'scaled', 'arcs', and 'projection.
         """
         import plotly.graph_objects as go
         
@@ -543,6 +689,8 @@ class Network_custom(object):
 
         if plot_type == 'equilibrium':
             vertices = self.vertices
+        elif plot_type == 'projection':
+            vertices = np.hstack([self.vertices_2d, np.zeros((self.vertices_2d.shape[0], 1))])
         else:
             vertices = self.vertices_scaled
         
@@ -587,10 +735,10 @@ class Network_custom(object):
             lines.extend(etexts)
 
         if vlabels:
-            if plot_type == 'equilibrium':
-                vtexts = [go.Scatter3d(x=[pos[0]], y=[pos[1]], z=[pos[2]], text=[label], mode='text') for label, pos in enumerate(self.vertices.tolist())]
-            else:
-                vtexts = [go.Scatter3d(x=[pos[0]], y=[pos[1]], z=[pos[2]], text=[str(i)], mode='text') for i, pos in enumerate(self.vertices_scaled.tolist())]
+            # if plot_type == 'equilibrium':
+            vtexts = [go.Scatter3d(x=[pos[0]], y=[pos[1]], z=[pos[2]], text=[label], mode='text') for label, pos in enumerate(vertices.tolist())]
+            # else:
+            #     vtexts = [go.Scatter3d(x=[pos[0]], y=[pos[1]], z=[pos[2]], text=[str(i)], mode='text') for i, pos in enumerate(vertices.tolist())]
             lines.extend(vtexts)
 
         # Setup layout
