@@ -40,7 +40,7 @@ class Network_custom(object):
         """Get the keys of the geometric edges."""
         self.g_keys = {tuple(edge): idx for idx, edge in enumerate(self.edges)}
 
-    def initialize_shape_optimizer(self, function_type = 'standard',  method = 'L-BFGS-B', params = None):
+    def initialize_shape_optimizer(self, function_type = 'standard',  method = 'L-BFGS-B', params = None, options = {}):
         """Initialize the ShapeOptimizer object.
         parameters:
         function_type: str
@@ -52,6 +52,7 @@ class Network_custom(object):
         """
         self.ShapeOptimizer = ShapeOptimizer(self.vertices_2d, self.edges, self.l0)
         self.ShapeOptimizer.set_optimization_method(method)
+        self.ShapeOptimizer.set_options(options)
         if function_type is not None:
             if params is None:
                 self.ShapeOptimizer.set_error_function(function_type)
@@ -128,6 +129,39 @@ class Network_custom(object):
         self.f = np.array(result.forces).reshape(-1)
         self.l1 = np.array(result.lengths).reshape(-1)
 
+    def update_shape_nlf(self, q, loads_0, edges = None):
+        """Update the vertices of the network based on the force densities.
+        parameters:
+        q: list of force densities
+        edges: list of edges. If not provided, the function will assume that a new q is provided for all edges in the same order as the previous q.
+        """
+        if edges is None:
+            if len(q) != len(self.edges):
+                raise ValueError("Number of force densities does not match the number of edges.")
+            self.q = np.array(q)
+        else:
+            for edge in edges:
+                self.q[edge] = q[edge]
+        loads = np.copy(loads_0)
+        while True:
+            result = fd_constrained_numpy(
+                vertices=self.vertices,
+                fixed=self.fixed,
+                edges=self.edges,
+                forcedensities=q,
+                loads=loads,
+                constraints=self.constraints,
+            )
+            loads_new = ... # a function that redefines the loads such that they are perpendicular to the surface of the cylindar
+            if np.linalg.norm(loads - loads_new) < 1e-3:
+                break
+            loads = loads_new
+
+        self.vertices = np.array(result.vertices).reshape(-1, 3)
+        self.vertices_2d = self.vertices[..., :2]
+        self.f = np.array(result.forces).reshape(-1)
+        self.l1 = np.array(result.lengths).reshape(-1)
+
     def is_closed(self, path):
         """Check if path is closed."""
         return self.edges[path[0]][0] == self.edges[path[-1]][1]
@@ -191,6 +225,8 @@ class Network_custom(object):
         -------
         l0 : array
             Initial lengths of the edges
+        l_scalar : float
+            minimum ratio of the initial length to the stressed length
         """
         from scipy.sparse.linalg import spsolve
         from scipy.sparse import diags
@@ -206,6 +242,48 @@ class Network_custom(object):
         I = diags(ones(v))
         A = spsolve(EA, Q.dot(L)) + I
         self.l0 = spsolve(A,self.l1)
+        self.l_scalar = np.min(self.l0/self.l1)
+        return self.l0, self.l_scalar
+    
+    def materialize_nonlinear(self, A, stress_data, strain_data, interpolation_kind = 'cubic'):
+        """Materialize the network by assigning material properties to the edges.
+        parameters:
+        A: list
+            Cross sectional area
+        strain_data: np.array
+            strain data from tensile test
+        strain: np.array
+
+        
+        Returns
+        -------
+        l0 : array
+            Initial lengths of the edges
+        l_scalar : float
+            minimum ratio of the initial length to the stressed length
+        """
+        from scipy.interpolate import interp1d
+        self.A = np.array(A)
+
+        #ensure stress values are ordered, positive, and unique:
+        stress_mask = stress_data >= 0
+        order = np.argsort(stress_data[stress_mask])
+        stress_sorted = stress_data[stress_mask][order]
+        strain_sorted = strain_data[stress_mask][order]
+
+        # Find unique stress values and compute mean strain for duplicates
+        unique_stress, indices, _ = np.unique(stress_sorted, return_inverse=True, return_counts=True)
+        unique_strain = np.zeros_like(unique_stress, dtype=float)
+
+        for i in range(len(unique_stress)):
+            unique_strain[i] = np.mean(strain_sorted[indices == i])  # Average strains for duplicate stresses
+
+        stress_to_strain = interp1d(unique_stress, unique_strain, kind=interpolation_kind, bounds_error=False, fill_value=np.nan)
+
+        force = self.q * self.l1  # Vectorized
+        stress = force / self.A
+        strain = stress_to_strain(stress)
+        self.l0 = self.l1 / (1 + strain)
         self.l_scalar = np.min(self.l0/self.l1)
         return self.l0, self.l_scalar
 
@@ -675,7 +753,7 @@ class Network_custom(object):
         vlabels: bool
             If True, the vertices will be labeled
         plot_type: str
-            Type of plot to display. Options are 'equilibrium', 'scaled', 'arcs', and 'projection.
+            Type of plot to display. Options are 'equilibrium', 'scaled', 'arcs', and 'projection'.
         """
         import plotly.graph_objects as go
         
@@ -820,6 +898,27 @@ class Network_custom(object):
         with open(path, 'wb') as f:
             pickle.dump(self, f)
         return
+    
+    def load_stress_strain_curve(self, file_path, convert_to_MPa = True):
+        """Load the stress-strain curve from a file.
+        parameters:
+        """
+        import pandas as pd
+        df = pd.read_csv(file_path)
+        # strain_columns = [col for col in df.columns if 'Strain' in col]
+        # stress_columns = [col for col in df.columns if 'Stress' in col]
+
+        # strain_data = np.array(df[strain_columns])[0]
+        # stress_data = np.array(df[stress_columns])[0]
+        strain_data = np.array(df['Strain'])
+        stress_data = np.array(df['Stress (Pa)'])
+        # stress measurement is in Pa. Rest of data is in mm and N, so we need to convert stress to N/m^2
+        if convert_to_MPa:
+            stress_data = stress_data*1e-6
+
+        stress_mask = stress_data >= 0
+        return stress_data[stress_mask], strain_data[stress_mask]
+
 
     @staticmethod
     def load_network(path = None):

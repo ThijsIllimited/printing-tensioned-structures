@@ -54,6 +54,17 @@ class ShapeOptimizer(object):
         """
         self.method = method
 
+    def set_options(self, options):
+        """
+        Set the maximum number of iterations for the optimization.
+
+        Parameters
+        ----------
+        setting : dict
+            Optimization settings.
+        """
+        self.options = options
+
     def _compute_error(self, flat_coords):
         """
         Compute the error using the active error function.
@@ -104,12 +115,18 @@ class ShapeOptimizer(object):
             raise ValueError("Initial guess does not match the number of vertices.")
 
         # Minimize the error
-        result = minimize(self._compute_error, initial_guess, method=self.method)
+        result = minimize(self._compute_error, initial_guess, method=self.method, callback=self.optimization_callback, options=self.options)
         if not result.success:
             raise RuntimeError(f"Optimization failed: {result.message}")
         vertices = result.x.reshape(-1, 2)
         l1 = np.array([np.linalg.norm(vertices[i] - vertices[j]) for i, j in self.edges])
         return vertices, l1, result
+
+    def optimization_callback(self, xk):
+        if not hasattr(self, "_iteration"):
+            self._iteration = 0  # Initialize counter on first call
+        print(f"Iteration {self._iteration}: Current error = {self._compute_error(xk)}")
+        self._iteration += 1  # Increment counter
 
     def standard_error_function(self, flat_coords):
         coords = flat_coords.reshape(-1, 2)
