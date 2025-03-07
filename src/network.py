@@ -904,7 +904,7 @@ class Network_custom(object):
         # Display the figure
         fig.show()
 
-    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium'):
+    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium', fp = False):
         """Plot the network using Matplotlib.
         parameters:
         color: bool
@@ -954,6 +954,11 @@ class Network_custom(object):
                     ax.text(mid_point[0], mid_point[1], str(i), color='black', fontsize=10)
         # Create lines
         ax.plot(x, y, 'g--', lw=1, alpha=0.6, label = 'Theoretical network')
+        if fp:
+            for fixed_point in self.fixed:
+                coorx, coory = vertices[fixed_point][:2]
+                ax.plot(coorx, coory, 'ro', markersize=10, label = 'Fixed point', alpha=0.6)
+            
         if vlabels:
             for i, pos in enumerate(vertices.tolist()):
                 ax.text(pos[0], pos[1], str(i), color='white', fontsize=10, fontweight='bold')
