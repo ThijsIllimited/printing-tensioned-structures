@@ -5,8 +5,8 @@ import numpy as np
 import warnings as Warning
 from shapely.geometry import LineString
 from shapely.affinity import translate
-from scipy.optimize import minimize
 from src.shapeoptimizer import ShapeOptimizer 
+from collections import Counter
 
 class Network_custom(object):
     def __init__(self):
@@ -21,7 +21,7 @@ class Network_custom(object):
         self.loads = []                 # Loads on the vertices
         self.l0 = []                    # Initial lengths of the edges
         self.l1 = []                    # Stressed lengths of the edges
-        self.l1_optimized = []          # Stressed lengths of the edges after optimization
+        self.l1_scaled = []             # Stressed lengths of the edges after scaling
         self.R  = []                    # Radius of the arcs
         self.th = []                    # Angle of the arcs
         self.xyz_vec= []                # Points on the arcs
@@ -35,6 +35,8 @@ class Network_custom(object):
         self.mat_dict = {}              # Dictionary of material properties
         self.ShapeOptimizer = None      # ShapeOptimizer object
         self.result = None              # Result of the optimization
+        self.leaf_edges = []            # Leaf edges of the network
+        self.leafs = []                 # Leaf vertices of the network
 
     def get_geometric_edge_keys(self):
         """Get the keys of the geometric edges."""
@@ -58,6 +60,26 @@ class Network_custom(object):
                 self.ShapeOptimizer.set_error_function(function_type)
             else:
                 self.ShapeOptimizer.set_error_function(function_type, **params)
+        return
+
+    def _set_leafs(self):
+        """Set the leafs of the network."""
+        vertex_list = [edge[0] for edge in self.edges] + [edge[1] for edge in self.edges]
+        counter = Counter(vertex_list)
+        leafs = [vertex for vertex, count in counter.items() if count == 1]
+        leafs = sorted(leafs)
+        self.leafs = leafs
+        self.leaf_edges = []
+        for edge_i, edge in enumerate(self.edges):
+            if edge[0] in leafs or edge[1] in leafs:
+                self.leaf_edges.append(edge_i)
+        
+        # for path in self.path:
+        #     if not self.is_closed(path):
+        #         self.leaf_edges.append(path[0])
+        #         self.leaf_edges.append(path[-1])
+        #         self.leafs.append(self.edges[path[0]][0])
+        #         self.leafs.append(self.edges[path[-1]][1])
         return
 
     def get_net_projection(self, plane_normal):
@@ -211,6 +233,7 @@ class Network_custom(object):
         net.l1 = np.array(result.lengths).reshape(-1)
 
         net.get_geometric_edge_keys()
+        net._set_leafs()
         return net
     
     def materialize(self, E, A):
@@ -305,18 +328,37 @@ class Network_custom(object):
         self.vertices_optimized[...,:2], self.l1, self.result = self.ShapeOptimizer.optimal_vertices()
         self.l_scalar = np.min(self.l0/self.l1)
 
-    def scale_vertices(self, reference_point, l_scalar = None):
+    def scale_vertices(self, reference_point, l_scalar = None, account_for_leafs = False):
         """Scale the network based on a reference point and a scale factor.
         parameters:
         reference_point: list or numpy array
             Coordinates of the reference point
         scale_factor: float
             Scale factor
+        account_for_leafs: bool
+            If True, the leafs of the network are updated to ensure they have the correct length after scaling.
         """
         if l_scalar is None:
             l_scalar = self.l_scalar
         reference_point = np.array(reference_point)
         self.vertices_scaled = reference_point + l_scalar * (self.vertices_optimized - reference_point)
+        self.l1_scaled = l_scalar * self.l1
+
+        if account_for_leafs:
+            if not self.leafs:
+                self._set_leafs()
+            for leaf_edge, leaf_end_node in zip(self.leaf_edges, self.leafs):
+                leaf_nodes = self.edges[leaf_edge]
+                leaf_start_node = leaf_nodes[np.where(leaf_nodes != leaf_end_node)[0][0]]
+                L_scaled = np.linalg.norm(self.vertices_scaled[leaf_start_node] - self.vertices_scaled[leaf_end_node])
+                # L = np.linalg.norm(self.vertices_optimized[leaf_start_node] - self.vertices_optimized[leaf_end_node])
+                dL = (self.l0[leaf_edge] - L_scaled)
+                dir_vec = self.vertices_scaled[leaf_end_node] - self.vertices_scaled[leaf_start_node]
+                dir_vec /= np.linalg.norm(dir_vec)
+                if np.isnan(dir_vec).any():
+                    dir_vec = np.array([0, 0, 0])
+                self.vertices_scaled[leaf_end_node] += dL * dir_vec
+                self.l1_scaled[leaf_edge] = np.linalg.norm(self.vertices_scaled[leaf_start_node] - self.vertices_scaled[leaf_end_node])
         return
 
     def arc_param(self, D = None, L = None, interpolation_points = 1e6):
@@ -339,7 +381,7 @@ class Network_custom(object):
             Angle of the arc
         """
         if D is None:
-            D = self.l_scalar * self.l1
+            D = self.l1_scaled
         if L is None:
             L = self.l0
         
@@ -446,6 +488,9 @@ class Network_custom(object):
         else:
             self.dir[edge_number] = dir
 
+        if isinstance(self.R, list) and not self.R:
+            return
+
         p0 = self.vertices_scaled[self.edges[edge_number][0]]
         p1 = self.vertices_scaled[self.edges[edge_number][1]]
         arc_points = self._points_on_arc(p0[:2], p1[:2], self.R[edge_number], self.dir[edge_number], n)
@@ -457,7 +502,7 @@ class Network_custom(object):
         self._update_paths()
         return
     
-    def flip_curves(self, edges, dir = None, n = None):
+    def flip_curves(self, edges = None, dir = None, n = None):
         """Flip the direction of the curves defined by the edge numbers.
         parameters:
         edges: list of int
@@ -469,12 +514,36 @@ class Network_custom(object):
         """        
         if n is None:
             n = self.n_split
-
+        
+        if edges is None:
+            edges = range(len(self.edges))
+            
         if dir is None:
             dir_vec = [None] * len(edges)
             
         for edge, dir in zip(edges, dir_vec):
             self.flip_curve(edge, dir, n)
+        return
+    
+    def auto_flip_curves(self, paths = None, n = None):
+        """Automatically flip the direction of the curves. Loops paths and directions are set to 1, -1, 1, -1, ...
+        parameters:
+        paths: list of list of int or None
+            List of paths to flip. If None, all paths are flipped.
+        n: int or None
+            Number of points to split the arcs into. If None, the default value will be used.
+        """
+        if n is None:
+            n = self.n_split
+        if paths is None:
+            paths = self.path
+        if  isinstance(paths[0], int):
+            paths = [paths]
+        for path in paths:
+            for i, edge in enumerate(path):
+                dir_goal = 1 if i % 2 == 0 else -1
+                if self.dir[edge] != dir_goal:
+                    self.flip_curve(edge, dir_goal, n)
         return
     
     def _update_paths(self):
@@ -707,7 +776,7 @@ class Network_custom(object):
                 p0 = path_xyz[-2]
                 p1 = path_xyz[-1]
                 angle0 = np.arctan2(p1[1] - p0[1], p1[0] - p0[0])
-                loop_points = self.find_loop_points(p0, angle0, L_loop, alpha_loop, n_points)
+                loop_points = self.find_loop_points(p1, angle0, L_loop, alpha_loop, n_points)
                 # Add loop_points at the end of the path
                 self.paths_xyz[i] = np.vstack([self.paths_xyz[i], loop_points])
         return
@@ -753,7 +822,7 @@ class Network_custom(object):
         vlabels: bool
             If True, the vertices will be labeled
         plot_type: str
-            Type of plot to display. Options are 'equilibrium', 'scaled', 'arcs', and 'projection'.
+            Type of plot to display. Options are 'equilibrium', 'optimized', 'scaled', 'arcs', and 'projection'.
         """
         import plotly.graph_objects as go
         
@@ -767,6 +836,8 @@ class Network_custom(object):
 
         if plot_type == 'equilibrium':
             vertices = self.vertices
+        elif plot_type == 'optimized':
+            vertices = self.vertices_optimized
         elif plot_type == 'projection':
             vertices = np.hstack([self.vertices_2d, np.zeros((self.vertices_2d.shape[0], 1))])
         else:
@@ -846,6 +917,7 @@ class Network_custom(object):
             Type of plot to display. Options are 'equilibrium', 'scaled' and arcs.
         """
         import matplotlib.pyplot as plt
+        import matplotlib.patheffects as path_effects
 
         x, y = [], []
         text_positions = []
@@ -878,12 +950,14 @@ class Network_custom(object):
                     mid_point = [(xyz_u[j] + xyz_v[j]) / 2 for j in range(3)]
                     text_positions.append(mid_point)
                     elabels.append(str(i))
-                    ax.text(mid_point[0], mid_point[1], str(i))
+                    ax.text(mid_point[0], mid_point[1], str(i), color='white', fontsize=10, fontweight='bold')
+                    ax.text(mid_point[0], mid_point[1], str(i), color='black', fontsize=10)
         # Create lines
         ax.plot(x, y, 'g--', lw=1, alpha=0.6, label = 'Theoretical network')
         if vlabels:
             for i, pos in enumerate(vertices.tolist()):
-                ax.text(pos[0], pos[1], str(i), color='black')
+                ax.text(pos[0], pos[1], str(i), color='white', fontsize=10, fontweight='bold')
+                ax.text(pos[0], pos[1], str(i), color='black', fontsize=10)
         return ax
     
     def save_network(self, path = None):
