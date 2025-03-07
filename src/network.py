@@ -3,8 +3,8 @@ from compas.geometry import distance_point_point
 from compas.datastructures import Graph
 import numpy as np
 import warnings as Warning
-from shapely.geometry import LineString
-from shapely.affinity import translate
+# from shapely.geometry import LineString
+# from shapely.affinity import translate
 from src.shapeoptimizer import ShapeOptimizer 
 from collections import Counter
 
