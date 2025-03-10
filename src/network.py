@@ -3,8 +3,6 @@ from compas.geometry import distance_point_point
 from compas.datastructures import Graph
 import numpy as np
 import warnings as Warning
-# from shapely.geometry import LineString
-# from shapely.affinity import translate
 from src.shapeoptimizer import ShapeOptimizer 
 from collections import Counter
 
@@ -425,7 +423,7 @@ class Network_custom(object):
         self._update_paths()
         return xyz
     
-    def _points_on_arc(self, p0, p1, R, dir=1, n=5):
+    def _points_on_arc(self, p0, p1, R, dir=1, n=5, print_parameters = False):
         """Calculate n points on an arc defined by a starting point, ending point, a radius, and a direction.
         input:
             p0:         the starting coordinates of the arc
@@ -465,7 +463,8 @@ class Network_custom(object):
         elif dir == -1 and theta0 < theta1:
             theta0 += 2 * np.pi
         angles = np.linspace(theta0, theta1, n)
-        
+        if print_parameters:
+            return center, theta0, theta1
         # Points on the arc
         arc_points = np.array([[center[0] + R * np.cos(angle), center[1] + R * np.sin(angle)] for angle in angles])
         return arc_points
