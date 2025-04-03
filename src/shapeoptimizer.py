@@ -180,7 +180,8 @@ class ShapeOptimizer(object):
         prev_error = float('inf')
 
         for _ in range(max_iter):
-            for (i, j), L_ij in zip(self.edges, self.l0):
+            random_order = np.random.permutation(len(self.edges))
+            for (i, j), L_ij in zip(self.edges[random_order], self.l0[random_order]):
                 diff = coords[i] - coords[j]
                 dist = np.linalg.norm(diff)
 

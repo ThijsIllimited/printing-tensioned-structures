@@ -234,6 +234,34 @@ class Network_custom(object):
         net._set_leafs()
         return net
     
+    @classmethod
+    def direct(cls, vertices, edges, q, fixed, paths = None, dir = None):
+        net = cls()
+        net.vertices = np.array(vertices)
+        net.edges = np.array(edges)
+        net.q = np.array(q)
+        net.dir = np.array(dir)
+
+        if paths is None:
+            Warning.warn("No paths provided. Make sure to set them later.")
+        else:
+            net.path = paths
+
+        net.fixed = np.array(fixed)
+
+        net.l1 = []
+        net.f = []
+        for edge, q in zip(edges, q):
+            v1, v2 = vertices[edge[0]], vertices[edge[1]]
+            net.l1.append(np.linalg.norm(v1-v2))
+            net.f.append(q * net.l1[-1])
+        net.l1 = np.array(net.l1)
+        net.f = np.array(net.f)
+        net.vertices_2d = net.vertices[..., :2]
+        net.get_geometric_edge_keys()
+        net._set_leafs()
+        return net
+
     def materialize(self, E, A):
         """Materialize the network by assigning material properties to the edges.
         parameters:
@@ -595,7 +623,48 @@ class Network_custom(object):
                         path_crossings.append([edge_j, edge_i])
             all_crossings.append(path_crossings)
         self.all_crossings = all_crossings
-        return
+        return crossing_pairs
+    
+    def account_for_crossings(self):
+        vertices_dict = {i: self.vertices_2d[i].tolist() + [0] for i in range(len(self.vertices_2d))}
+        graph = Graph.from_nodes_and_edges(vertices_dict, self.edges.tolist())
+        crossing_pairs = graph.find_crossings()
+        crossing_pairs_copy = crossing_pairs.copy()
+        copied_vertices = []
+        while len(crossing_pairs_copy)>0:
+            crossing_pairs = crossing_pairs_copy.copy()
+            edge_to_index = {tuple(sorted(edge)): i for i, edge in enumerate(map(tuple, self.edges))}
+
+            # flat_edges = [tuple(sorted(e)) for pair in crossing_pairs for e in pair]
+            # edge_counts = Counter(flat_edges)
+
+            # Flatten into a list of vertices
+            flat_vertices = [v for pair in crossing_pairs for e in pair for v in e]
+            vertex_counts = Counter(flat_vertices)
+
+            most_crossed_vertex = max(vertex_counts, key=vertex_counts.get)
+            # most_crossed_edge = max(edge_counts, key=edge_counts.get)
+            new_vertex_index = len(self.vertices_2d)
+            # new_vertex = self.vertices_2d[most_crossed_vertex].copy() * np.array([-1.2, 1])
+            related_edges = list(set([edge for pair in crossing_pairs for edge in pair if most_crossed_vertex in edge]))
+            other_vertices = [v for edge in related_edges for v in edge if v != most_crossed_vertex]
+            mean_other_vertex = np.mean(self.vertices_2d[other_vertices], axis=0)
+            direction_vector = mean_other_vertex
+            direction_vector_length = np.linalg.norm(direction_vector)
+            direction_vector /= direction_vector_length
+            mean_edge_length = np.mean([self.l0[edge_to_index[tuple(sorted(edge))]] for edge in related_edges])
+            new_vertex = direction_vector * (mean_edge_length + direction_vector_length)
+
+            for pair in crossing_pairs:
+                for edge in pair:
+                    if most_crossed_vertex in edge:
+                        edge_index = edge_to_index[tuple(sorted(edge))]
+                        self.edges[edge_index] = [new_vertex_index if v == most_crossed_vertex else v for v in edge]
+                        crossing_pairs_copy.remove(pair)
+            self.vertices_2d = np.vstack([self.vertices_2d, new_vertex])
+            self.vertices = np.vstack([self.vertices, np.append(new_vertex, 0)])
+            copied_vertices.append((most_crossed_vertex, new_vertex_index))
+        return copied_vertices
 
     def jump_at_crossings(self, crossing_width = 1, crossing_height = 1, interpolation_function = None):
         """
@@ -811,7 +880,7 @@ class Network_custom(object):
         return
 
     # Visualize the network
-    def net_plot(self, color=False, elables=False, vlabels=False, plot_type='equilibrium'):
+    def net_plot(self, color=False, elables=False, vlabels=False, plot_type='equilibrium', custom_vertices = None):
         """Plot the network using Plotly.
         parameters:
         color: bool
@@ -841,6 +910,9 @@ class Network_custom(object):
             vertices = np.hstack([self.vertices_2d, np.zeros((self.vertices_2d.shape[0], 1))])
         else:
             vertices = self.vertices_scaled
+        
+        if custom_vertices is not None:
+            vertices = custom_vertices
         
         if plot_type == 'arcs':
             color = False
@@ -895,15 +967,16 @@ class Network_custom(object):
         # Combine data and layout into a figure
         fig = go.Figure(data=lines, layout=layout)
         # Set axis limits
-        # fig.update_layout(scene=dict(
-        #     xaxis=dict(nticks=10, range=[-200, 200]),
-        #     yaxis=dict(nticks=10, range=[-200, 200]),
-        #     zaxis=dict(nticks=10, range=[-200, 200])
-        # ))
+        fig.update_layout(scene=dict(
+            # xaxis=dict(nticks=10, range=[-100, 100]),
+            # yaxis=dict(nticks=10, range=[-100, 100]),
+            # zaxis=dict(nticks=10, range=[-100,100])
+            camera=dict(eye=dict(x=0, y=0, z=15))
+        ))
         # Display the figure
         fig.show()
 
-    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium', fp = False):
+    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium', fp = False, vertices_c = None):
         """Plot the network using Matplotlib.
         parameters:
         color: bool
@@ -917,6 +990,7 @@ class Network_custom(object):
         """
         import matplotlib.pyplot as plt
         import matplotlib.patheffects as path_effects
+        from matplotlib.patheffects import withStroke
 
         x, y = [], []
         text_positions = []
@@ -926,7 +1000,9 @@ class Network_custom(object):
             vertices = self.vertices
         else:
             vertices = self.vertices_scaled
-        
+        if vertices_c is not None:
+            vertices = vertices_c
+
         if plot_type == 'arcs':
             for i, (u, v) in enumerate(self.edges):
                 x.extend(list(self.xyz_vec[i][:,0])+[None])
@@ -952,16 +1028,16 @@ class Network_custom(object):
                     ax.text(mid_point[0], mid_point[1], str(i), color='white', fontsize=10, fontweight='bold')
                     ax.text(mid_point[0], mid_point[1], str(i), color='black', fontsize=10)
         # Create lines
-        ax.plot(x, y, 'g--', lw=1, alpha=0.6, label = 'Theoretical network')
+        ax.plot(x, y, 'g--', lw=1.5, alpha=0.6, label = 'Theoretical network')
         if fp:
-            for fixed_point in self.fixed:
-                coorx, coory = vertices[fixed_point][:2]
-                ax.plot(coorx, coory, 'ro', markersize=10, label = 'Fixed point', alpha=0.6)
+            coorx = vertices[self.fixed, 0]
+            coory = vertices[self.fixed, 1]
+            ax.plot(coorx, coory, 'ro', markersize=4, label = 'Fixed points - actual', alpha=0.6)
             
         if vlabels:
             for i, pos in enumerate(vertices.tolist()):
-                ax.text(pos[0], pos[1], str(i), color='white', fontsize=10, fontweight='bold')
-                ax.text(pos[0], pos[1], str(i), color='black', fontsize=10)
+                ax.text(pos[0]+10, pos[1]+10, str(i+1), color='black', fontsize=12, 
+                        path_effects=[withStroke(linewidth=3, foreground='white')], fontweight='bold')
         return ax
     
     def save_network(self, path = None):
@@ -997,7 +1073,6 @@ class Network_custom(object):
         stress_mask = stress_data >= 0
         return stress_data[stress_mask], strain_data[stress_mask]
 
-
     @staticmethod
     def load_network(path = None):
         """Load the network from a file.
@@ -1012,6 +1087,189 @@ class Network_custom(object):
             self = pickle.load(f)
         return self
 
+    def material_model(self,stress_data, strain_data, interpolation_kind = 'cubic'):
+        """Convert strain to stress using the interpolation function."""
+        from scipy.interpolate import interp1d
+        strain_to_stress = interp1d(strain_data, stress_data, kind=interpolation_kind, bounds_error=False, fill_value=np.nan)
+        return strain_to_stress
+
+    @staticmethod
+    def equilibrium_residuals(xyz_free, xyz_fixed, edges, l0, A, fixed, free, material_model):
+
+        xyz_free = xyz_free.reshape(-1, 2)
+        xyz_fixed = xyz_fixed
+
+        residuals = np.zeros((len(xyz_free) + len(xyz_fixed), 2))
+        vertices = np.zeros((len(xyz_free) + len(xyz_fixed), 2))
+        vertices[fixed] = xyz_fixed
+        vertices[free] = xyz_free
+
+        for (i, j), l0_ij, A_ij in zip(edges, l0, A):
+            p_i = vertices[i]
+            p_j = vertices[j]
+
+            # Compute current edge length
+            l_ij = np.linalg.norm(p_j - p_i)
+            r_ij = (p_j - p_i) / l_ij  # Unit vector
+
+            eps = np.max([(l0_ij - l_ij) / l0_ij, 0]) # Strain
+            sigma = material_model(eps) # Stress
+            f_ij = sigma * r_ij * A_ij # Force vector
+
+            # Accumulate forces at free nodes
+            if i not in fixed:
+                residuals[i] += f_ij
+            if j not in fixed:
+                residuals[j] -= f_ij
+        return residuals[free].flatten()
+
+    def find_equilibrium(self, new_vertices, A, strain_to_stress):
+        """Find the equilibrium position of the network.
+        parameters:
+        new_vertices: numpy array
+            The vertices of the network
+        A: numpy array
+            The cross-sectional area of each edge
+        strain_to_stress: function
+            The interpolation function that converts strain to stress
+        """
+        
+        from scipy.optimize import least_squares
+        vertices = new_vertices
+        fixed = self.fixed
+        free = ~np.isin(np.arange(len(vertices)), fixed)
+        xyz_init = vertices[free, :2]
+        xyz_fixed = vertices[fixed, :2]
+
+        sol = least_squares(self.equilibrium_residuals, xyz_init.flatten(), args=(xyz_fixed, self.edges, self.l0, A, fixed, free, strain_to_stress))
+        vertices_equilibrium = np.zeros_like(vertices)
+        vertices_equilibrium[free, :2] = sol.x.reshape((-1, 2))
+        vertices_equilibrium[fixed, :2] = xyz_fixed
+
+        l1 = np.linalg.norm(vertices_equilibrium[self.edges[:, 0]] - vertices_equilibrium[self.edges[:, 1]], axis=1)
+        f = strain_to_stress((l1 - self.l0) / self.l0) * A
+        if np.any(np.isnan(f)):
+            print('Warning: One or more edges will be slack or its stress exceeds tested values.')
+        return vertices_equilibrium, l1, f
+
+    def tikz_string(self, vertices, edges, labels=None, color=None, scale=10., rotate_label = 0, font_scale = 1):
+        """Generate a TikZ string for the network.
+        parameters:
+        vertices: numpy array
+            The vertices of the network
+        edges: list of tuples
+            The edges of the network
+        labels: list of str or None
+            The labels for the vertices. If None, no labels will be added.
+        color: str
+            The color of the edges
+        scale: float
+            The scale factor for the TikZ string
+        """
+        tikz_lines = [r"\begin{tikzpicture}"]        
+        if color is None:
+            color_s = 'black'
+        else:
+            import matplotlib.pyplot as plt
+            f_min, f_max = float("inf"), float("-inf")
+            for f in color:
+                if f < f_min:
+                    f_min = f
+                if f > f_max:
+                    f_max = f   
+            cmap = plt.get_cmap("viridis")
+
+        for i, (x, y) in enumerate(vertices):
+            if labels is None:
+                continue
+            elif labels is True:
+                tikz_lines.append(fr"""\node[right, rotate={rotate_label}, text=red!70!black, scale={font_scale}] at ({x/scale+0.1:.3f}, {y/scale:.3f}) {{\textbf{{{i+1}}}}};""")  # Numbered labels
+            else:
+                tikz_lines.append(fr"""\node[right, rotate={rotate_label}, text=red!70!black, scale={font_scale}] at ({x/scale+0.1:.3f}, {y/scale:.3f}) {{\textbf{{{labels[i]}}}}};""")  # Custom labels
+            tikz_lines.append(fr"""\draw[fill=black] ({x/scale:.3f}, {y/scale:.3f}) circle (0.05);""")  # Small filled circle
+
+        for i, edge in enumerate(edges):
+            p0 = vertices[edge[0], :2]
+            p1 = vertices[edge[1], :2]
+            if color is None:
+                tikz_lines.append(fr"""\draw[{color_s}] ({p0[0]/scale:.3f}, {p0[1]/scale:.3f}) -- ({p1[0]/scale:.3f}, {p1[1]/scale:.3f});""")
+            else:
+                f = color[i]
+                norm_f = (f - f_min) / (f_max - f_min) if f_max > f_min else 0.5
+                r, g, b, _ = cmap(norm_f)
+                tikz_lines.append(fr"""\definecolor{{edge{i}}}{{rgb}}{{{r:.3f},{g:.3f},{b:.3f}}}""")
+                tikz_lines.append(fr"""\draw[color=edge{i}] ({p0[0]/scale:.3f}, {p0[1]/scale:.3f}) -- ({p1[0]/scale:.3f}, {p1[1]/scale:.3f});""")
+        tikz_lines += [r"\end{tikzpicture}"]
+        return tikz_lines
+    
+    def tikz_string_vertices(self, vertices, scale=10.):
+        """Generate a TikZ string for the vertices of the network.
+        parameters:
+        vertices: numpy array
+            The vertices of the network
+        labels: list of str or None
+            The labels for the vertices. If None, no labels will be added.
+        color: str
+            The color of the edges
+        scale: float
+            The scale factor for the TikZ string
+        """
+        tikz_lines = [r"\begin{tikzpicture}"]        
+        for i, (x, y) in enumerate(vertices):
+            if np.isnan(x) or np.isnan(y):
+                continue
+            if i > 0:  # Skip the first vertex
+                prev_x, prev_y = vertices[i - 1]
+                if np.isnan(prev_x) or np.isnan(prev_y):
+                    continue
+                tikz_lines.append(fr"""\draw[black] ({prev_x/scale:.3f}, {prev_y/scale:.3f}) -- ({x/scale:.3f}, {y/scale:.3f});""")
+        tikz_lines += [r"\end{tikzpicture}"]
+        return tikz_lines        
+
+    def read_gcode(self, gcode_file, save_every_n=1):
+        vertices = []
+        counter = 0
+        with open(gcode_file, "r") as f:
+            prev_vertex = None # Initialize prev_vertex
+            segment_open = False # Flag to track if a segment is open
+            last_vertex = None # Track the last valid vertex
+            for line in f:
+                if line.startswith(";"):  # Skip comments
+                    continue
+                if not line.strip():  # Skip empty lines
+                    if segment_open and last_vertex is not None and (not vertices or vertices[-1] != last_vertex):
+                        vertices.append(last_vertex)  # Ensure last vertex is saved
+                    if not vertices or vertices[-1] != (np.nan, np.nan):
+                        vertices.append((np.nan, np.nan))  # Mark segment boundary
+                    segment_open = False
+                    last_vertex = None
+                    continue
+                parts = line.split()
+                if parts[0] in ["G0", "G1"]:  # Move or extrusion commands
+                    x = y = z = None
+                    for part in parts:
+                        if part.startswith("X"):
+                            x = float(part[1:])
+                        elif part.startswith("Y"):
+                            y = float(part[1:])
+                        elif part.startswith("Z"):
+                            z = float(part[1:])
+                    
+                    if x is not None and y is not None and z is not None:
+                        vertex = (x, y)
+                        if not segment_open or vertex != prev_vertex:
+                            if counter % save_every_n == 0:
+                                vertices.append(vertex)
+                            counter += 1
+                        prev_vertex = vertex
+                        segment_open = True
+                        last_vertex = vertex  # Track last valid vertex
+            
+            if segment_open and last_vertex is not None and (not vertices or vertices[-1] != last_vertex):
+                vertices.append(last_vertex)  # Ensure final vertex is saved
+
+        vertices = np.array(vertices)
+        return vertices
 
 def replace_brackets(line, temperature_settings):
     """"Replace the brackets and the brackets contents with the corresponding variable from the dictionary"""
