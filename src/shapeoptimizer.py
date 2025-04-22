@@ -188,7 +188,7 @@ class ShapeOptimizer(object):
                 if dist > tol/100:
                     # correction = (L_ij - dist) * (diff / dist) / 2  # Move both nodes halfway
                     correction_factor = (L_ij - dist) / L_ij  # Relative error
-                    if dist < L_ij:
+                    if dist > L_ij:
                         correction_factor *= correction_scalar  # Damping for short edges
                     correction = correction_factor * diff/2
                     coords[i] += correction*damping

@@ -880,7 +880,7 @@ class Network_custom(object):
         return
 
     # Visualize the network
-    def net_plot(self, color=False, elables=False, vlabels=False, plot_type='equilibrium', custom_vertices = None):
+    def net_plot(self, color=False, elables=False, vlabels=False, plot_type='equilibrium', custom_vertices = None, path_colors = False):
         """Plot the network using Plotly.
         parameters:
         color: bool
@@ -913,7 +913,11 @@ class Network_custom(object):
         
         if custom_vertices is not None:
             vertices = custom_vertices
-        
+        if path_colors:
+            color = False
+            n_paths = len(self.path)
+            path_color_vec = np.linspace(0, 1, n_paths)
+
         if plot_type == 'arcs':
             color = False
             for i, (u, v) in enumerate(self.edges):
@@ -937,12 +941,18 @@ class Network_custom(object):
                 z.extend([xyz_u[2], xyz_v[2], None])
                 if color:
                     c.extend([self.f[i], self.f[i], 0])
+                if path_colors:
+                    for path_index, path in enumerate(self.path):
+                        if i in path:
+                            c.extend([path_color_vec[path_index], path_color_vec[path_index], 0])
+                            break
+
                 if elables:
                     mid_point = [(xyz_u[j] + xyz_v[j]) / 2 for j in range(3)]
                     text_positions.append(mid_point)
                     elabels.append(str(i))
 
-        if color:
+        if color or path_colors:
             line_marker = dict(width=3, color=c, colorscale='Viridis', colorbar=dict(title='Force'), showscale=True)
         else:
             line_marker = dict(width=3, color='black')
@@ -967,11 +977,12 @@ class Network_custom(object):
         # Combine data and layout into a figure
         fig = go.Figure(data=lines, layout=layout)
         # Set axis limits
+        cam_height = 0.05 * np.max(np.abs(vertices))
         fig.update_layout(scene=dict(
             # xaxis=dict(nticks=10, range=[-100, 100]),
             # yaxis=dict(nticks=10, range=[-100, 100]),
             # zaxis=dict(nticks=10, range=[-100,100])
-            camera=dict(eye=dict(x=0, y=0, z=15))
+            camera=dict(eye=dict(x=0, y=0, z=cam_height))
         ))
         # Display the figure
         fig.show()
