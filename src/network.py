@@ -978,12 +978,13 @@ class Network_custom(object):
         fig = go.Figure(data=lines, layout=layout)
         # Set axis limits
         cam_height = 0.05 * np.max(np.abs(vertices))
-        fig.update_layout(scene=dict(
-            # xaxis=dict(nticks=10, range=[-100, 100]),
-            # yaxis=dict(nticks=10, range=[-100, 100]),
-            # zaxis=dict(nticks=10, range=[-100,100])
-            camera=dict(eye=dict(x=0, y=0, z=cam_height))
-        ))
+        fig.update_layout(
+        scene_camera=dict(
+            eye=dict(x=0, y=0, z=-cam_height),   # Look straight down
+            up=dict(x=0, y=-1, z=0),             # +Y is down
+            center=dict(x=0, y=0, z=0)
+            )
+        )
         # Display the figure
         fig.show()
 
