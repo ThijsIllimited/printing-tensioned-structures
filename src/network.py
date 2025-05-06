@@ -980,15 +980,15 @@ class Network_custom(object):
         cam_height = 0.05 * np.max(np.abs(vertices))
         fig.update_layout(
         scene_camera=dict(
-            eye=dict(x=0, y=0, z=-cam_height),   # Look straight down
-            up=dict(x=0, y=-1, z=0),             # +Y is down
+            eye=dict(x=0, y=0, z=cam_height),   # Look straight down
+            up=dict(x=0, y=1, z=0),             # +Y is down
             center=dict(x=0, y=0, z=0)
             )
         )
         # Display the figure
         fig.show()
 
-    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium', fp = False, vertices_c = None):
+    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium', fp = False, fp0=False, vertices_c = None, flipy=False):
         """Plot the network using Matplotlib.
         parameters:
         color: bool
@@ -1014,6 +1014,9 @@ class Network_custom(object):
             vertices = self.vertices_scaled
         if vertices_c is not None:
             vertices = vertices_c
+        
+        if flipy:
+            vertices[:,1] = -vertices[:,1]
 
         if plot_type == 'arcs':
             for i, (u, v) in enumerate(self.edges):
@@ -1045,7 +1048,11 @@ class Network_custom(object):
             coorx = vertices[self.fixed, 0]
             coory = vertices[self.fixed, 1]
             ax.plot(coorx, coory, 'ro', markersize=4, label = 'Fixed points - actual', alpha=0.6)
-            
+        if fp0:
+            coorx = vertices[self.fixed[0], 0]
+            coory = vertices[self.fixed[0], 1]
+            ax.plot(coorx, coory, 'ro', markersize=4, label = 'Fixed points 0', alpha=0.6)
+
         if vlabels:
             for i, pos in enumerate(vertices.tolist()):
                 ax.text(pos[0]+10, pos[1]+10, str(i+1), color='black', fontsize=12, 
@@ -1065,7 +1072,7 @@ class Network_custom(object):
             pickle.dump(self, f)
         return
     
-    def load_stress_strain_curve(self, file_path, convert_to_MPa = True):
+    def load_stress_strain_curve(self, file_path, A_scale = 1):
         """Load the stress-strain curve from a file.
         parameters:
         """
@@ -1076,11 +1083,15 @@ class Network_custom(object):
 
         # strain_data = np.array(df[strain_columns])[0]
         # stress_data = np.array(df[stress_columns])[0]
-        strain_data = np.array(df['Strain'])
-        stress_data = np.array(df['Stress (Pa)'])
-        # stress measurement is in Pa. Rest of data is in mm and N, so we need to convert stress to N/m^2
-        if convert_to_MPa:
+        strain_data = np.array(df['Strain'])*A_scale
+        try:
+            stress_data = np.array(df['Stress (Pa)'])
             stress_data = stress_data*1e-6
+        except:
+            stress_data = np.array(df['Stress (MPa)'])
+        # stress measurement is in Pa. Rest of data is in mm and N, so we need to convert stress to N/m^2
+        # if convert_to_MPa:
+            # stress_data = stress_data*1e-6
 
         stress_mask = stress_data >= 0
         return stress_data[stress_mask], strain_data[stress_mask]
@@ -1104,6 +1115,67 @@ class Network_custom(object):
         from scipy.interpolate import interp1d
         strain_to_stress = interp1d(strain_data, stress_data, kind=interpolation_kind, bounds_error=False, fill_value=np.nan)
         return strain_to_stress
+    
+    def vertices_mm_to_pxl(self, vertices, mm_to_px = 1, width = 1, height = 1):
+        """Convert the vertices from mm to pixels.
+        parameters:
+        vertices: numpy array
+            The vertices of the network
+        mm_to_px: float
+            The conversion factor from mm to pixels
+        width: float
+            The width of the image
+        height: float
+            The height of the image
+        """
+        vertices_mm = vertices.copy()
+        vertices_mm *= mm_to_px # Scale the network vertices to match the image scale
+        vertices_mm[:, 1] *= -1 # Flip the y-coordinates to match the image coordinates
+        shift = np.array([width/2, height/2])
+        if vertices_mm.shape[1] == 3:
+            shift = np.append(shift, 0)
+        vertices_mm += shift
+        return vertices_mm
+    
+    def vertices_pxl_to_mm(self, vertices, mm_to_px = 1, width = 1, height = 1):
+        """Convert the vertices from pixels to mm.
+        parameters:
+        vertices: numpy array
+            The vertices of the network
+        mm_to_px: float
+            The conversion factor from mm to pixels
+        width: float
+            The width of the image
+        height: float
+            The height of the image
+        """
+        vertices_pxl = vertices.copy()
+        shift = np.array([width/2, height/2])
+        if vertices.shape[1] == 3:
+            shift = np.append(shift, 0)
+        vertices_pxl -= shift # Shift the vertices to the center of the image
+        vertices_pxl[:, 1] *= -1
+        vertices_pxl /= mm_to_px # Scale the network vertices to match the image scale
+        return vertices_pxl
+
+    def apply_homography(self, points, homography_matrix):
+        """
+        Convert 2D mm points to pixel coordinates using the homography matrix.
+        """
+        points_mm_h = np.hstack([points[:, :2], np.ones((points.shape[0], 1))])  # make homogeneous
+        points_px_h = (homography_matrix @ points_mm_h.T).T
+        points_px = points_px_h[:, :2] / points_px_h[:, 2, np.newaxis]
+        return points_px
+
+    def apply_inv_homography(self, points, homography_matrix):
+        """
+        Convert pixel coordinates back to mm using the inverse homography.
+        """
+        inv_homography = np.linalg.inv(homography_matrix)
+        points_px_h = np.hstack([points[:, :2], np.ones((popointsints_px.shape[0], 1))])
+        points_mm_h = (inv_homography @ points_px_h.T).T
+        points_mm = points_mm_h[:, :2] / points_mm_h[:, 2, np.newaxis]
+        return points_mm
 
     @staticmethod
     def equilibrium_residuals(xyz_free, xyz_fixed, edges, l0, A, fixed, free, material_model):
@@ -1124,7 +1196,8 @@ class Network_custom(object):
             l_ij = np.linalg.norm(p_j - p_i)
             r_ij = (p_j - p_i) / l_ij  # Unit vector
 
-            eps = np.max([(l0_ij - l_ij) / l0_ij, 0]) # Strain
+            # eps = np.max([(l0_ij - l_ij) / l0_ij, 0]) # Strain
+            eps = max((l_ij - l0_ij) / l0_ij, 0)
             sigma = material_model(eps) # Stress
             f_ij = sigma * r_ij * A_ij # Force vector
 
@@ -1153,7 +1226,8 @@ class Network_custom(object):
         xyz_init = vertices[free, :2]
         xyz_fixed = vertices[fixed, :2]
 
-        sol = least_squares(self.equilibrium_residuals, xyz_init.flatten(), args=(xyz_fixed, self.edges, self.l0, A, fixed, free, strain_to_stress))
+        sol = least_squares(self.equilibrium_residuals, xyz_init.flatten(), args=(xyz_fixed, self.edges, self.l0, A, fixed, free, strain_to_stress), xtol=1e-9, gtol=1e-9, ftol=1e-9, max_nfev=10000)
+        print(sol.message)
         vertices_equilibrium = np.zeros_like(vertices)
         vertices_equilibrium[free, :2] = sol.x.reshape((-1, 2))
         vertices_equilibrium[fixed, :2] = xyz_fixed

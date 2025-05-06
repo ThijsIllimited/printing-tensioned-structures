@@ -188,8 +188,10 @@ class ShapeOptimizer(object):
                 if dist > tol/100:
                     # correction = (L_ij - dist) * (diff / dist) / 2  # Move both nodes halfway
                     correction_factor = (L_ij - dist) / L_ij  # Relative error
-                    if dist > L_ij:
+                    if dist < L_ij:
                         correction_factor *= correction_scalar  # Damping for short edges
+                    else:
+                        correction_factor /= correction_scalar
                     correction = correction_factor * diff/2
                     coords[i] += correction*damping
                     coords[j] -= correction*damping
@@ -203,6 +205,9 @@ class ShapeOptimizer(object):
                 print(f"Converged after {_} iterations.")
                 break
             prev_error = total_error
+            if np.isnan(total_error) or np.isinf(total_error):
+                print("No equilibrium. Stopping optimization.")
+                break
         print(f"Final error: {total_error}")
         self.history = np.array(self.history)
         return coords
