@@ -154,6 +154,7 @@ cython_debug/
 
 \DATA
 \old_numpy
+\scripts
 **/*.pkl
 **/**/*.gcode
 **/**/*.tex
