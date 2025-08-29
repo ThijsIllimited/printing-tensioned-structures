@@ -631,13 +631,10 @@ class Network_custom(object):
         crossing_pairs = graph.find_crossings()
         crossing_pairs_copy = crossing_pairs.copy()
         copied_vertices = []
+        center_point = np.mean(self.vertices_2d, axis = 0)
+        edge_to_index = {tuple(sorted(edge)): i for i, edge in enumerate(map(tuple, self.edges))}
         while len(crossing_pairs_copy)>0:
             crossing_pairs = crossing_pairs_copy.copy()
-            edge_to_index = {tuple(sorted(edge)): i for i, edge in enumerate(map(tuple, self.edges))}
-
-            # flat_edges = [tuple(sorted(e)) for pair in crossing_pairs for e in pair]
-            # edge_counts = Counter(flat_edges)
-
             # Flatten into a list of vertices
             flat_vertices = [v for pair in crossing_pairs for e in pair for v in e]
             vertex_counts = Counter(flat_vertices)
@@ -649,11 +646,11 @@ class Network_custom(object):
             related_edges = list(set([edge for pair in crossing_pairs for edge in pair if most_crossed_vertex in edge]))
             other_vertices = [v for edge in related_edges for v in edge if v != most_crossed_vertex]
             mean_other_vertex = np.mean(self.vertices_2d[other_vertices], axis=0)
-            direction_vector = mean_other_vertex
+            direction_vector = mean_other_vertex.copy() - center_point
             direction_vector_length = np.linalg.norm(direction_vector)
             direction_vector /= direction_vector_length
             mean_edge_length = np.mean([self.l0[edge_to_index[tuple(sorted(edge))]] for edge in related_edges])
-            new_vertex = direction_vector * (mean_edge_length + direction_vector_length)
+            new_vertex = center_point + direction_vector * (mean_edge_length + direction_vector_length)
 
             for pair in crossing_pairs:
                 for edge in pair:
@@ -664,7 +661,7 @@ class Network_custom(object):
             self.vertices_2d = np.vstack([self.vertices_2d, new_vertex])
             self.vertices = np.vstack([self.vertices, np.append(new_vertex, 0)])
             copied_vertices.append((most_crossed_vertex, new_vertex_index))
-        return copied_vertices
+        return copied_vertices, other_vertices, mean_other_vertex
 
     def jump_at_crossings(self, crossing_width = 1, crossing_height = 1, interpolation_function = None):
         """
@@ -796,7 +793,7 @@ class Network_custom(object):
         y0 = np.tan(alpha_loop/2)*x0
         y1 = np.tan(-alpha_loop/2)*x1
         R  = y0[-1]
-        th = np.linspace(np.pi/2,-np.pi/2, n_points // 3)[1:]
+        th = np.linspace(np.pi/2,-np.pi/2, n_points // 2)[1:]
         xr = R*np.cos(th) + x0[-1]
         yr = R*np.sin(th)
 
@@ -988,7 +985,7 @@ class Network_custom(object):
         # Display the figure
         fig.show()
 
-    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium', fp = False, fp0=False, vertices_c = None, flipy=False):
+    def net_plot_mat(self, ax, elables=False, vlabels=False, plot_type='equilibrium', fp = False, fp0=False, vertices_c = None, flipy=False, ls  = 'g--'):
         """Plot the network using Matplotlib.
         parameters:
         color: bool
@@ -1043,7 +1040,7 @@ class Network_custom(object):
                     ax.text(mid_point[0], mid_point[1], str(i), color='white', fontsize=10, fontweight='bold')
                     ax.text(mid_point[0], mid_point[1], str(i), color='black', fontsize=10)
         # Create lines
-        ax.plot(x, y, 'g--', lw=1.5, alpha=0.6, label = 'Theoretical network')
+        ax.plot(x, y, ls, lw=1.5, alpha=0.6, label = 'Theoretical network')
         if fp:
             coorx = vertices[self.fixed, 0]
             coory = vertices[self.fixed, 1]
@@ -1311,6 +1308,53 @@ class Network_custom(object):
                 tikz_lines.append(fr"""\draw[black] ({prev_x/scale:.3f}, {prev_y/scale:.3f}) -- ({x/scale:.3f}, {y/scale:.3f});""")
         tikz_lines += [r"\end{tikzpicture}"]
         return tikz_lines        
+
+    def generate_tikz_figure(self, vertices = None, edges=None, paths=None, scale=10.0, path_color="red!70!black"):
+        """
+        Generates a TikZ string for a network with optional highlighted paths.
+
+        Parameters:
+        vertices (numpy array): A 2D array of vertex coordinates.
+        edges (list of tuples): A list of tuples representing the edges (indices of vertices).
+        paths (list of lists of int, optional): A list of paths to highlight. Each path is a list
+                                                of vertex indices. Defaults to None.
+        scale (float): A scaling factor for the coordinates.
+        path_color (str): The color for the highlighted paths. Defaults to "red!70!black".
+
+        Returns:
+        str: A complete TikZ string.
+        """
+        tikz_lines = [r"\begin{tikzpicture}"]
+
+        # Draw all the edges
+        if edges:
+            for p0_idx, p1_idx in edges:
+                p0 = vertices[p0_idx]
+                p1 = vertices[p1_idx]
+                tikz_lines.append(
+                    fr"""\draw[black] ({p0[0]/scale:.3f}, {p0[1]/scale:.3f}) -- ({p1[0]/scale:.3f}, {p1[1]/scale:.3f});"""
+                )
+
+        # Highlight the paths
+        if paths:
+            for path in paths:
+                for i in range(len(path) - 1):
+                    p0 = path[i]
+                    p1 = path[i+1]
+                    # p0 = vertices[p0_idx]
+                    # p1 = vertices[p1_idx]
+                    tikz_lines.append(
+                        fr"""\draw[line width=1.5pt, {path_color}] ({p0[0]/scale:.3f}, {p0[1]/scale:.3f}) -- ({p1[0]/scale:.3f}, {p1[1]/scale:.3f});"""
+                    )
+                    
+        # Draw all the vertices on top to ensure visibility
+        if vertices:
+            for i, (x, y) in enumerate(vertices):
+                tikz_lines.append(fr"""\draw[fill=black] ({x/scale:.3f}, {y/scale:.3f}) circle (0.05);""")
+                tikz_lines.append(fr"""\node[right, text=black] at ({x/scale+0.1:.3f}, {y/scale:.3f}) {{{i}}};""")
+
+        tikz_lines += [r"\end{tikzpicture}"]
+        return "\n".join(tikz_lines)
 
     def read_gcode(self, gcode_file, save_every_n=1):
         vertices = []
