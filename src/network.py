@@ -46,7 +46,7 @@ class Network_custom(object):
         function_type: str
             Type of error function ('standard', 'sigmoid', or 'no optimization').
         method: str
-            Optimization method to use.
+            Optimization method to use. ('L-BFGS-B', 'Gauss-Seidel', or any method accepted by scipy.optimize.minimize)
         params: dict
             Parameters for the error function (e.g., a, b for sigmoid).
         """
@@ -80,24 +80,56 @@ class Network_custom(object):
         #         self.leafs.append(self.edges[path[-1]][1])
         return
 
-    def get_net_projection(self, plane_normal):
-    # Normalize the plane normal to ensure it's a unit vector
-        plane_normal = plane_normal / np.linalg.norm(plane_normal)
+    def flatten_network(self, method = None, points = None, **kwargs):
+        """
+        Flatten network vertices, using specified method.
+        methods:
+        Projection: The coordiante in the direction of a vector is removed.
+        provide the axis
+
+        Radial: The radii directions are disregarded:
+        Provide the the axis 
+
+        spherical: the radii directions are disregarded:
+        Provide an axis and a center points
+        """
+        if points is None:
+            points = self.vertices
+
+        if method == 'projection':
+            axis = kwargs['axis']
+            vertices_2d = self._get_net_projection(axis, points)
+        elif method == 'radial':
+            axis = kwargs['axis']
+            vertices_2d = self._flatten_radial(axis, points)
+        elif method == 'spherical':
+            axis = kwargs['axis']
+            center =  kwargs['center']
+            vertices_2d = self._flatten_shperical(axis, center, points)
+
+        self.vertices_2d = vertices_2d
+        return vertices_2d
+    
+    def _get_net_projection(self, axis, points = None):
+        if points is None:
+            points = self.vertices
+        # Normalize the plane normal to ensure it's a unit vector
+        axis = axis / np.linalg.norm(axis)
         
         # Define an arbitrary vector to construct the local basis
-        arbitrary_vector = np.array([1, 0, 0]) if not np.allclose(plane_normal, [1, 0, 0]) else np.array([0, 1, 0])
+        arbitrary_vector = np.array([1, 0, 0]) if not np.allclose(axis, [1, 0, 0]) else np.array([0, 1, 0])
         
         # Compute the local x' axis (orthogonal to the plane normal)
-        x_prime = np.cross(arbitrary_vector, plane_normal)
+        x_prime = np.cross(arbitrary_vector, axis)
         x_prime /= np.linalg.norm(x_prime)
         
         # Compute the local y' axis (orthogonal to both the plane normal and x')
-        y_prime = np.cross(plane_normal, x_prime)
+        y_prime = np.cross(axis, x_prime)
         y_prime /= np.linalg.norm(y_prime)
         
         # Project vertices into the local coordinate system
         x_y_coordinates = []
-        for vertex in self.vertices:
+        for vertex in points:
             # Subtract any offset (e.g., if plane passes through a point other than origin)
             # For simplicity, assuming the plane passes through the origin
             x_prime_coord = np.dot(vertex, x_prime)
@@ -105,6 +137,107 @@ class Network_custom(object):
             x_y_coordinates.append([x_prime_coord, y_prime_coord])
         self.vertices_2d = np.array(x_y_coordinates)
         return self.vertices_2d
+    
+    def _flatten_radial(self, axis, points = None):
+        """
+        Unwraps a cloud of 3D points around a given vector. radial coordinate is disregarde, such that all points are on a shared plane
+        
+        Parameters:
+        points : (N,3) array - 3D points
+        axis   : (3,) array - The axis vector
+        
+        Returns:
+        unwrapped_points : (N,2) array - Unwrapped (θ, z) coordinates
+        """
+        if points is None:
+            points = self.vertices
+        # Normalize axis
+        axis = axis / np.linalg.norm(axis)
+
+        # Compute projections of points onto the axis
+        z = np.dot(points, axis)
+
+        # Get radial vectors (orthogonal component to axis)
+        radial_vectors = points - np.outer(z, axis)
+
+        # Step 3: Define two orthonormal vectors u and v spanning the plane perpendicular to axis
+        # Choose an arbitrary vector not parallel to axis
+        a = np.array([1, 0, 0]) if abs(axis[0]) < 0.9 else np.array([0, 1, 0])
+
+        # First basis vector in the plane
+        u = np.cross(axis, a)
+        u /= np.linalg.norm(u)
+
+        # Second basis vector orthogonal to both axis and u
+        v = -np.cross(axis, u)
+        v /= np.linalg.norm(v)
+
+        # Step 4: Project radial vectors onto (u, v) to get 2D coordinates
+        radial_2d = np.stack([np.dot(radial_vectors, u), np.dot(radial_vectors, v)], axis=-1)  # shape (N, 2)
+
+
+        # Compute angles θ (atan2 gives full 360° angle)
+        theta = np.arctan2(radial_2d[:,1], radial_2d[:,0])
+
+        # Compute radial distances
+        r = np.linalg.norm(radial_2d, axis=1)
+
+        # Unwrap by converting θ to linear distance
+        unwrapped_x = theta * np.mean(r)  # Scale angle into a length
+        # print(u, v, axis)
+        return np.column_stack((unwrapped_x, z))
+    
+    def _flatten_shperical(self, axis, center, points = None):
+        """
+        Unwraps a 3D point cloud into a flat 2D plane using spherical coordinates
+        (theta * mean_r, phi * mean_r), relative to a given center and axis.
+        
+        Parameters:
+        points : (N,3) array - 3D points
+        axis   : (3,) array - Axis vector defining the 'pole'
+        center : (3,) array - Origin for spherical coordinates
+        
+        Returns:
+        flat_coords : (N,2) array - 2D flattened coordinates (theta·r̄, phi·r̄)
+        """
+        # Normalize axis
+        if points is None:
+            points = self.vertices
+        
+        axis = axis / np.linalg.norm(axis)
+
+        # Shift points
+        shifted = points - center
+
+        # Radial distance
+        r = np.linalg.norm(shifted, axis=1)
+        mean_r = np.mean(r)
+
+        # Polar angle φ (angle from axis)
+        cos_phi = np.dot(shifted, axis) / r
+        phi = np.arccos(np.clip(cos_phi, -1.0, 1.0))
+
+        # Orthonormal basis in plane perpendicular to axis
+        a = np.array([1, 0, 0]) if abs(axis[0]) < 0.9 else np.array([0, 1, 0])
+        u = np.cross(axis, a)
+        u /= np.linalg.norm(u)
+        v = -np.cross(axis, u)
+        v /= np.linalg.norm(v)
+
+        # Radial vectors in the plane
+        proj_axis = np.outer(np.dot(shifted, axis), axis)
+        radial_vectors = shifted - proj_axis
+
+        # Project to 2D plane to get azimuth θ
+        radial_2d = np.stack([np.dot(radial_vectors, u), np.dot(radial_vectors, v)], axis=-1)
+        theta = np.arctan2(radial_2d[:,1], radial_2d[:,0])
+
+        # Flatten to 2D plane
+        x = theta * mean_r
+        y = phi * mean_r
+
+        return np.column_stack((x, y))
+
 
     def set_material(self, material_dict):
         """Set the material properties of the network.
@@ -661,7 +794,7 @@ class Network_custom(object):
             self.vertices_2d = np.vstack([self.vertices_2d, new_vertex])
             self.vertices = np.vstack([self.vertices, np.append(new_vertex, 0)])
             copied_vertices.append((most_crossed_vertex, new_vertex_index))
-        return copied_vertices, other_vertices, mean_other_vertex
+        return copied_vertices
 
     def jump_at_crossings(self, crossing_width = 1, crossing_height = 1, interpolation_function = None):
         """
