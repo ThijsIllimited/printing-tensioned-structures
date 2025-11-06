@@ -156,7 +156,8 @@ cython_debug/
 \old_numpy
 \scripts
 **/*.pkl
-**/**/*.gcode
+!/DATA/*.gcode
+/DATA/*/**/*.gcode
 **/**/*.tex
 
 # PyCharm
