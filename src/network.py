@@ -708,6 +708,7 @@ class Network_custom(object):
     
     def _update_paths(self):
         """Update lists of coordinates constituting printable paths paths based on the new points on the arcs. The first coordinate of each edge is removed to avoid overlap, except for the first edge."""
+        self._orient_path()
         self.paths_xyz = []
         for path in self.path:
             path_xyz = self.xyz_vec[path[0]].copy()
@@ -716,6 +717,33 @@ class Network_custom(object):
             self.paths_xyz.append(path_xyz)
         return
     
+    def _orient_path(self):
+        """Flip edges so that each subpath in self.path forms a continuous vertex chain."""
+        for path in self.path:
+            edges = np.array([self.edges[i] for i in path])
+            flipped = []
+
+            # Fix first edge orientation if needed
+            if edges[0, 1] not in edges[1]:
+                edges[0] = edges[0][::-1]
+                flipped.append(path[0])
+
+            # Flip subsequent edges as needed
+            for i in range(1, len(edges)):
+                if edges[i, 0] != edges[i-1, 1]:
+                    edges[i] = edges[i][::-1]
+                    flipped.append(path[i])
+
+            # Update edges back into self.edges
+            for idx, edge_id in enumerate(path):
+                self.edges[edge_id] = edges[idx]
+
+            # Print updates
+            if flipped:
+                msg = f"Orientation corrected for edges: {flipped}\n"
+                msg += "\n".join([f"  edge {eid}: {self.edges[eid]}" for eid in flipped])
+                Warning.warn(msg)
+
     def get_crossings(self):
         """Get the pairs of edges that cross each other in the path.
         returns:
@@ -1365,7 +1393,7 @@ class Network_custom(object):
         l1 = np.linalg.norm(vertices_equilibrium[self.edges[:, 0]] - vertices_equilibrium[self.edges[:, 1]], axis=1)
         f = strain_to_stress((l1 - self.l0) / self.l0) * A
         if np.any(np.isnan(f)):
-            print('Warning: One or more edges will be slack or its stress exceeds tested values.')
+            Warning.warn("One or more edges will be slack or its stress exceeds tested values.")
         return vertices_equilibrium, l1, f
 
     def tikz_string(self, vertices, edges, labels=None, color=None, scale=10., rotate_label = 0, font_scale = 1):
@@ -1533,11 +1561,3 @@ class Network_custom(object):
 
         vertices = np.array(vertices)
         return vertices
-
-def replace_brackets(line, temperature_settings):
-    """"Replace the brackets and the brackets contents with the corresponding variable from the dictionary"""
-    for key, value in temperature_settings.items():
-        key_b = '[' + key + ']'
-        if key_b in line:
-            line = line.replace(key_b, str(value))
-    return line
