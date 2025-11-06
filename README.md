@@ -1,4 +1,4 @@
-# Ideas
+# 3D printed networks with programmable tension
 
 ## Installation
 
@@ -15,11 +15,6 @@
    or  
    ```bash
    pip install PySide6
-   ```
-
-3. **Run the initialization file**
-   ```bash
-   python init.py
    ```
 
 ## Tutorials
