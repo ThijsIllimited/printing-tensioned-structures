@@ -19,7 +19,7 @@
 
 ## Tutorials
 
-The three Jupyter Notebook scripts serve as tutorials demonstrating how to use the code to generate **3D printed networks with programmable tension**.
+The four Jupyter Notebook scripts serve as tutorials demonstrating how to use the code to generate **3D printed networks with programmable tension**.
 
-Each notebook corresponds to one of the showcase cases from the publication:  
+Each notebook corresponds to one of the showcases and the validation structure from this publication:  
 [https://doi.org/10.48550/arXiv.2509.05855](link)
