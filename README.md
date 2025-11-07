@@ -23,3 +23,6 @@ The four Jupyter Notebook scripts serve as tutorials demonstrating how to use th
 
 Each notebook corresponds to one of the showcases and the validation structure from this publication:  
 [https://doi.org/10.48550/arXiv.2509.05855](link)
+
+## Note:
+The generated gcodes are for Prusa printers. Update the start_gcode_Prusa.gcode files accordingly if other types of printers are used.
